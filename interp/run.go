@@ -1315,7 +1315,8 @@ func getIndexMap(n *node) {
 	z := reflect.New(n.child[0].typ.frameType().Elem()).Elem()
 
 	if n.child[1].rval.IsValid() { // constant map index
-		convertConstantValue(n.child[1])
+		// TODO(nick): can do better here
+		convertConstantValue(n.child[1], nil)
 		mi := n.child[1].rval
 
 		switch {
@@ -1409,7 +1410,8 @@ func getIndexMap2(n *node) {
 		return
 	}
 	if n.child[1].rval.IsValid() { // constant map index
-		convertConstantValue(n.child[1])
+		// TODO(nick): can do better here
+		convertConstantValue(n.child[1], nil)
 		mi := n.child[1].rval
 		switch {
 		case !doValue:
@@ -1582,7 +1584,7 @@ func writableDeref(v reflect.Value) reflect.Value {
 	// Here we have an interface to a struct. Any attempt to dereference it will
 	// make a copy of the struct. We need to get a Value to the actual struct.
 	// TODO: using unsafe is a temporary measure. Rethink this.
-	return reflect.NewAt(v.Elem().Type(), unsafe.Pointer(v.InterfaceData()[1])).Elem() //nolint:govet
+	return reflect.NewAt(v.Elem().Type(), unsafe.Pointer(v.InterfaceData()[1])).Elem() // nolint:govet
 }
 
 func getPtrIndexSeq(n *node) {
@@ -2783,7 +2785,7 @@ func convertLiteralValue(n *node, t reflect.Type) {
 		// Skip non-constant values, undefined target type or interface target type.
 	case n.rval.IsValid():
 		// Convert constant value to target type.
-		convertConstantValue(n)
+		convertConstantValue(n, t)
 		n.rval = n.rval.Convert(t)
 	default:
 		// Create a zero value of target type.
@@ -2791,7 +2793,7 @@ func convertLiteralValue(n *node, t reflect.Type) {
 	}
 }
 
-var bitlen = [...]int{
+var bitlen2 = [...]int{
 	reflect.Int:     64,
 	reflect.Int8:    8,
 	reflect.Int16:   16,
@@ -2805,7 +2807,7 @@ var bitlen = [...]int{
 	reflect.Uintptr: 64,
 }
 
-func convertConstantValue(n *node) {
+func convertConstantValue(n *node, typ reflect.Type) {
 	if !n.rval.IsValid() {
 		return
 	}
@@ -2814,44 +2816,11 @@ func convertConstantValue(n *node) {
 		return
 	}
 
+	// TODO(nick): Rework this
+
 	v := n.rval
-	typ := n.typ.TypeOf()
-	kind := typ.Kind()
-	switch kind {
-	case reflect.Bool:
-		v = reflect.ValueOf(constant.BoolVal(c)).Convert(typ)
-	case reflect.String:
-		v = reflect.ValueOf(constant.StringVal(c)).Convert(typ)
-	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
-		i, _ := constant.Int64Val(c)
-		l := constant.BitLen(c)
-		if l > bitlen[kind] {
-			panic(fmt.Sprintf("constant %s overflows int%d", c.ExactString(), bitlen[kind]))
-		}
-		v = reflect.ValueOf(i).Convert(typ)
-	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:
-		i, _ := constant.Uint64Val(c)
-		l := constant.BitLen(c)
-		if l > bitlen[kind] {
-			panic(fmt.Sprintf("constant %s overflows uint%d", c.ExactString(), bitlen[kind]))
-		}
-		v = reflect.ValueOf(i).Convert(typ)
-	case reflect.Float32:
-		f, _ := constant.Float32Val(c)
-		v = reflect.ValueOf(f).Convert(typ)
-	case reflect.Float64:
-		f, _ := constant.Float64Val(c)
-		v = reflect.ValueOf(f).Convert(typ)
-	case reflect.Complex64:
-		r, _ := constant.Float32Val(constant.Real(c))
-		i, _ := constant.Float32Val(constant.Imag(c))
-		v = reflect.ValueOf(complex(r, i)).Convert(typ)
-	case reflect.Complex128:
-		r, _ := constant.Float64Val(constant.Real(c))
-		i, _ := constant.Float64Val(constant.Imag(c))
-		v = reflect.ValueOf(complex(r, i)).Convert(typ)
-	default:
-		// Type kind is from internal constant representation. Only use default types here.
+
+	if typ == nil {
 		switch c.Kind() {
 		case constant.Bool:
 			v = reflect.ValueOf(constant.BoolVal(c))
@@ -2871,6 +2840,44 @@ func convertConstantValue(n *node) {
 			i, _ := constant.Float64Val(constant.Imag(c))
 			v = reflect.ValueOf(complex(r, i))
 		}
+		n.rval = v
+		return
+	}
+
+	kind := typ.Kind()
+	switch kind {
+	case reflect.Bool:
+		v = reflect.ValueOf(constant.BoolVal(c)).Convert(typ)
+	case reflect.String:
+		v = reflect.ValueOf(constant.StringVal(c)).Convert(typ)
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		i, _ := constant.Int64Val(c)
+		l := constant.BitLen(c)
+		if l > bitlen2[kind] {
+			panic(fmt.Sprintf("constant %s overflows int%d", c.ExactString(), bitlen[kind]))
+		}
+		v = reflect.ValueOf(i).Convert(typ)
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:
+		i, _ := constant.Uint64Val(c)
+		l := constant.BitLen(c)
+		if l > bitlen2[kind] {
+			panic(fmt.Sprintf("constant %s overflows uint%d", c.ExactString(), bitlen[kind]))
+		}
+		v = reflect.ValueOf(i).Convert(typ)
+	case reflect.Float32:
+		f, _ := constant.Float32Val(c)
+		v = reflect.ValueOf(f).Convert(typ)
+	case reflect.Float64:
+		f, _ := constant.Float64Val(c)
+		v = reflect.ValueOf(f).Convert(typ)
+	case reflect.Complex64:
+		r, _ := constant.Float32Val(constant.Real(c))
+		i, _ := constant.Float32Val(constant.Imag(c))
+		v = reflect.ValueOf(complex(r, i)).Convert(typ)
+	case reflect.Complex128:
+		r, _ := constant.Float64Val(constant.Real(c))
+		i, _ := constant.Float64Val(constant.Imag(c))
+		v = reflect.ValueOf(complex(r, i)).Convert(typ)
 	}
 	n.rval = v
 }

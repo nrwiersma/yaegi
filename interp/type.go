@@ -3,6 +3,7 @@ package interp
 import (
 	"fmt"
 	"go/constant"
+	"go/token"
 	"path/filepath"
 	"reflect"
 	"strconv"
@@ -48,6 +49,7 @@ const (
 	uintptrT
 	valueT
 	variadicT
+	idealT
 	maxT
 )
 
@@ -85,6 +87,7 @@ var cats = [...]string{
 	uintptrT:    "uintptrT",
 	valueT:      "valueT",
 	variadicT:   "variadicT",
+	idealT:      "idealT",
 }
 
 func (c tcat) String() string {
@@ -93,6 +96,16 @@ func (c tcat) String() string {
 	}
 	return "Cat(" + strconv.Itoa(int(c)) + ")"
 }
+
+var (
+	idealBool   = &itype{cat: boolT, name: "bool"}
+	idealString = &itype{cat: stringT, name: "string"}
+
+	idealInt     = &itype{cat: idealT}
+	idealRune    = &itype{cat: idealT}
+	idealFloat   = &itype{cat: idealT}
+	idealComplex = &itype{cat: idealT}
+)
 
 // structField type defines a field in a struct.
 type structField struct {
@@ -205,59 +218,25 @@ func nodeType(interp *Interpreter, sc *scope, n *node) (*itype, error) {
 		}
 
 	case basicLit:
+		// ASTed basicLits already have a type, this is from an
+		// external source.
 		switch v := n.rval.Interface().(type) {
 		case bool:
-			t.cat = boolT
-			t.name = "bool"
-		case byte:
-			t.cat = uint8T
-			t.name = "uint8"
-			t.untyped = true
-		case complex64:
-			t.cat = complex64T
-			t.name = "complex64"
-		case complex128:
-			t.cat = complex128T
-			t.name = "complex128"
-			t.untyped = true
-		case float32:
-			t.cat = float32T
-			t.name = "float32"
-			t.untyped = true
-		case float64:
-			t.cat = float64T
-			t.name = "float64"
-			t.untyped = true
-		case int:
-			t.cat = intT
-			t.name = "int"
-			t.untyped = true
-		case uint:
-			t.cat = uintT
-			t.name = "uint"
-			t.untyped = true
+			t = idealBool
 		case rune:
-			t.cat = int32T
-			t.name = "int32"
-			t.untyped = true
+			vv := constant.MakeFromLiteral(string(v), token.CHAR, 0)
+			n.rval = reflect.ValueOf(vv)
+			t = idealRune
 		case string:
-			t.cat = stringT
-			t.name = "string"
-			t.untyped = true
+			t = idealString
 		case constant.Value:
 			switch v.Kind() {
 			case constant.Int:
-				t.cat = intT
-				t.name = "int"
-				t.untyped = true
+				t = idealInt
 			case constant.Float:
-				t.cat = float64T
-				t.name = "float64"
-				t.untyped = true
+				t = idealFloat
 			case constant.Complex:
-				t.cat = complex128T
-				t.name = "complex128"
-				t.untyped = true
+				t = idealComplex
 			default:
 				err = n.cfgErrorf("missing support for type %v", n.rval)
 			}
@@ -691,7 +670,10 @@ func fieldName(n *node) string {
 }
 
 var zeroValues [maxT]reflect.Value
-var okFor [aMax][maxT]bool
+var (
+	okFor [aMax][maxT]bool
+	okForArith [maxT]bool
+)
 
 func init() {
 	zeroValues[boolT] = reflect.ValueOf(false)
@@ -720,10 +702,9 @@ func init() {
 		okForAdd   [maxT]bool
 		okForAnd   [maxT]bool
 		okForBool  [maxT]bool
-		okForArith [maxT]bool
 	)
 	for cat := tcat(0); cat < maxT; cat++ {
-		if (cat >= intT && cat <= int64T) || (cat >= uintT && cat <= uintptrT) {
+		if (cat >= intT && cat <= int64T) || (cat >= uintT && cat <= uintptrT) || cat == idealT {
 			okForEq[cat] = true
 			okForCmp[cat] = true
 			okForAdd[cat] = true
@@ -780,6 +761,8 @@ func init() {
 	okFor[aXor] = okForAnd
 	okFor[aShl] = okForAnd
 	okFor[aShr] = okForAnd
+
+	okFor[aBitNot] = okForAnd
 	okFor[aNeg] = okForArith
 	okFor[aNot] = okForBool
 	okFor[aPos] = okForArith
@@ -927,10 +910,61 @@ func isComplete(t *itype, visited map[string]bool) bool {
 	return true
 }
 
+func (t *itype) isUntyped() bool {
+	if t == idealString || t == idealBool {
+		return true
+	}
+	switch t.cat {
+	case nilT, idealT:
+		return true
+	}
+	return false
+}
+
+func (t *itype) isBool() bool   { return t.cat == boolT }
+func (t *itype) isString() bool { return t.cat == stringT }
+
+func (t *itype) isInt() bool {
+	switch t.cat {
+	case intT, int8T, int16T, int32T, int64T, uintT, uint8T, uint16T, uint32T, uint64T, uintptrT:
+		return true
+	}
+	return false
+}
+
+func (t *itype) isSigned() bool {
+	switch t.cat {
+	case intT, int8T, int16T, int32T, int64T:
+		return true
+	}
+	return false
+}
+
+func (t *itype) isFloat() bool {
+	switch t.cat {
+	case float32T, float64T:
+		return true
+	}
+	return false
+}
+
+func (t *itype) isComplex() bool {
+	switch t.cat {
+	case complex64T, complex128T:
+		return true
+	}
+	return false
+}
+
 // comparable returns true if the type is comparable.
 func (t *itype) comparable() bool {
 	typ := t.TypeOf()
 	return t.cat == nilT || typ != nil && typ.Comparable()
+}
+
+// comparable returns true if the types are assignable.
+func (t *itype) assignableTo(o *itype) bool {
+	return t.TypeOf().AssignableTo(o.TypeOf())
 }
 
 // Equals returns true if the given type is identical to the receiver one.
@@ -1007,6 +1041,9 @@ func (t *itype) methods() methodSet {
 // id returns a unique type identificator string.
 func (t *itype) id() (res string) {
 	if t.name != "" {
+		if t.path == "" {
+			return t.name
+		}
 		return t.path + "." + t.name
 	}
 	switch t.cat {
@@ -1046,6 +1083,17 @@ func (t *itype) id() (res string) {
 		res += "}"
 	case valueT:
 		res = t.rtype.PkgPath() + "." + t.rtype.Name()
+	case idealT:
+		switch t {
+		case idealInt:
+			res = "untyped int"
+		case idealRune:
+			res = "rune"
+		case idealFloat:
+			res = "untyped float"
+		case idealComplex:
+			res = "untyped complex"
+		}
 	}
 	return res
 }
@@ -1064,6 +1112,18 @@ func (t *itype) zero() (v reflect.Value, err error) {
 
 	case valueT:
 		v = reflect.New(t.rtype).Elem()
+
+	case idealT:
+		switch t {
+		case idealInt:
+			v = zeroValues[intT]
+		case idealRune:
+			v = zeroValues[int32T]
+		case idealFloat:
+			v = zeroValues[float64T]
+		case idealComplex:
+			v = zeroValues[complex128T]
+		}
 
 	default:
 		v = zeroValues[t.cat]
@@ -1405,88 +1465,6 @@ func hasRecursiveStruct(t *itype, defined map[string]*itype) bool {
 	return false
 }
 
-var errType = reflect.TypeOf((*error)(nil)).Elem()
-
-func catOf(t reflect.Type) tcat {
-	if t == nil {
-		return nilT
-	}
-	if t == errType {
-		return errorT
-	}
-	switch t.Kind() {
-	case reflect.Bool:
-		return boolT
-	case reflect.Int:
-		return intT
-	case reflect.Int8:
-		return int8T
-	case reflect.Int16:
-		return int16T
-	case reflect.Int32:
-		return int32T
-	case reflect.Int64:
-		return int64T
-	case reflect.Uint:
-		return uintT
-	case reflect.Uint8:
-		return uint8T
-	case reflect.Uint16:
-		return uint16T
-	case reflect.Uint32:
-		return uint32T
-	case reflect.Uint64:
-		return uint64T
-	case reflect.Uintptr:
-		return uintptrT
-	case reflect.Float32:
-		return float32T
-	case reflect.Float64:
-		return float64T
-	case reflect.Complex64:
-		return complex64T
-	case reflect.Complex128:
-		return complex128T
-	case reflect.Array, reflect.Slice:
-		return arrayT
-	case reflect.Chan:
-		return chanT
-	case reflect.Func:
-		return funcT
-	case reflect.Interface:
-		return interfaceT
-	case reflect.Map:
-		return mapT
-	case reflect.Ptr:
-		return ptrT
-	case reflect.String:
-		return stringT
-	case reflect.Struct:
-		return structT
-	case reflect.UnsafePointer:
-		return uintptrT
-	}
-	return nilT
-}
-
-func catOfConst(v reflect.Value) tcat {
-	c, ok := v.Interface().(constant.Value)
-	if !ok {
-		return nilT
-	}
-
-	switch c.Kind() {
-	case constant.Int:
-		return intT
-	case constant.Float:
-		return float64T
-	case constant.Complex:
-		return complex128T
-	default:
-		return nilT
-	}
-}
-
 func constToInt(c constant.Value) int {
 	if constant.BitLen(c) > 64 {
 		panic(fmt.Sprintf("constant %s overflows int64", c.ExactString()))
@@ -1534,7 +1512,6 @@ func chanElement(t *itype) *itype {
 	return nil
 }
 
-func isBool(t *itype) bool { return t.TypeOf().Kind() == reflect.Bool }
 func isChan(t *itype) bool { return t.TypeOf().Kind() == reflect.Chan }
 func isSendChan(t *itype) bool {
 	rt := t.TypeOf()

@@ -97,7 +97,7 @@ func genValueAs(n *node, t reflect.Type) func(*frame) reflect.Value {
 func genValue(n *node) func(*frame) reflect.Value {
 	switch n.kind {
 	case basicLit:
-		convertConstantValue(n)
+		convertConstantValue(n, n.typ.TypeOf())
 		v := n.rval
 		if !v.IsValid() {
 			v = reflect.New(interf).Elem()
@@ -113,7 +113,7 @@ func genValue(n *node) func(*frame) reflect.Value {
 		return func(f *frame) reflect.Value { return v }
 	default:
 		if n.rval.IsValid() {
-			convertConstantValue(n)
+			convertConstantValue(n, nil)
 			v := n.rval
 			return func(f *frame) reflect.Value { return v }
 		}

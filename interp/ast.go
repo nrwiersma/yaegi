@@ -190,6 +190,7 @@ type astError error
 type action uint
 
 // Node actions for the go language.
+// Important: XAssign must be the next item after X.
 const (
 	aNop action = iota
 	aAddr
@@ -477,20 +478,25 @@ func (interp *Interpreter) ast(src, name string) (string, *node, error) {
 			n.ident = a.Value
 			switch a.Kind {
 			case token.CHAR:
-				v, _, _, _ := strconv.UnquoteChar(a.Value[1:len(a.Value)-1], '\'')
-				n.rval = reflect.ValueOf(v)
-			case token.FLOAT:
 				v := constant.MakeFromLiteral(a.Value, a.Kind, 0)
 				n.rval = reflect.ValueOf(v)
-			case token.IMAG:
-				v := constant.MakeFromLiteral(a.Value, a.Kind, 0)
-				n.rval = reflect.ValueOf(v)
+				n.typ = idealRune
 			case token.INT:
 				v := constant.MakeFromLiteral(a.Value, a.Kind, 0)
 				n.rval = reflect.ValueOf(v)
+				n.typ = idealInt
+			case token.FLOAT:
+				v := constant.MakeFromLiteral(a.Value, a.Kind, 0)
+				n.rval = reflect.ValueOf(v)
+				n.typ = idealFloat
+			case token.IMAG:
+				v := constant.MakeFromLiteral(a.Value, a.Kind, 0)
+				n.rval = reflect.ValueOf(v)
+				n.typ = idealComplex
 			case token.STRING:
 				v, _ := strconv.Unquote(a.Value)
 				n.rval = reflect.ValueOf(v)
+				n.typ = idealString
 			}
 			st.push(n, nod)
 
